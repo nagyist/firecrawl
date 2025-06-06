@@ -26,6 +26,13 @@ export async function saveCrawl(id: string, crawl: StoredCrawl) {
   });
   await redisEvictConnection.set("crawl:" + id, JSON.stringify(crawl));
   await redisEvictConnection.expire("crawl:" + id, 24 * 60 * 60);
+
+  await redisEvictConnection.sadd("crawls_by_team_id:" + crawl.team_id, id);
+  await redisEvictConnection.expire("crawls_by_team_id:" + crawl.team_id, 24 * 60 * 60);
+}
+
+export async function getCrawlsByTeamId(team_id: string): Promise<string[]> {
+  return await redisEvictConnection.smembers("crawls_by_team_id:" + team_id);
 }
 
 export async function getCrawl(id: string): Promise<StoredCrawl | null> {
@@ -162,17 +169,16 @@ export async function finishCrawlPre(id: string) {
     const set = await redisEvictConnection.setnx("crawl:" + id + ":finished_pre", "yes");
     await redisEvictConnection.expire("crawl:" + id + ":finished_pre", 24 * 60 * 60);
     return set === 1;
-  } else {
-    // _logger.debug("Crawl can not be pre-finished yet, not marking as finished.", {
-    //   module: "crawl-redis",
-    //   method: "finishCrawlPre",
-    //   crawlId: id,
-    //   jobs_done: await redisEvictConnection.scard("crawl:" + id + ":jobs_done"),
-    //   jobs: await redisEvictConnection.scard("crawl:" + id + ":jobs"),
-    //   kickoff_finished:
-    //     (await redisEvictConnection.get("crawl:" + id + ":kickoff:finish")) !== null,
-    // });
   }
+}
+
+export async function unPreFinishCrawl(id: string) {
+  _logger.debug("Un-pre-finishing crawl.", {
+    module: "crawl-redis",
+    method: "unPreFinishCrawl",
+    crawlId: id,
+  });
+  await redisEvictConnection.del("crawl:" + id + ":finished_pre");
 }
 
 export async function finishCrawl(id: string) {
@@ -183,6 +189,12 @@ export async function finishCrawl(id: string) {
   });
   await redisEvictConnection.set("crawl:" + id + ":finish", "yes");
   await redisEvictConnection.expire("crawl:" + id + ":finish", 24 * 60 * 60);
+  
+  const crawl = await getCrawl(id);
+  if (crawl && crawl.team_id) {
+    await redisEvictConnection.srem("crawls_by_team_id:" + crawl.team_id, id);
+    await redisEvictConnection.expire("crawls_by_team_id:" + crawl.team_id, 24 * 60 * 60);
+  }
 }
 
 export async function getCrawlJobs(id: string): Promise<string[]> {
