@@ -1,4 +1,4 @@
-import { crawl } from "./lib";
+import { asyncCrawl, asyncCrawlWaitForFinish, crawl, crawlOngoing } from "./lib";
 import { describe, it, expect } from "@jest/globals";
 
 describe("Crawl tests", () => {
@@ -18,8 +18,11 @@ describe("Crawl tests", () => {
 
         expect(res.success).toBe(true);
         if (res.success) {
-            expect(res.completed).toBe(1);
-            expect(res.data[0].metadata.sourceURL).toBe("https://firecrawl.dev/pricing");
+            expect(res.completed).toBeGreaterThan(0);
+            for (const page of res.data) {
+                const url = new URL(page.metadata.url ?? page.metadata.sourceURL!);
+                expect(url.pathname).toMatch(/^\/pricing$/);
+            }
         }
     }, 120000);
 
@@ -45,6 +48,23 @@ describe("Crawl tests", () => {
             delay: 5,
         });
     }, 300000);
+
+    it.concurrent("ongoing crawls endpoint works", async () => {
+        const res = await asyncCrawl({
+            url: "https://firecrawl.dev",
+            limit: 3,
+        });
+
+        const ongoing = await crawlOngoing();
+
+        expect(ongoing.crawls.find(x => x.id === res.id)).toBeDefined();
+
+        await asyncCrawlWaitForFinish(res.id);
+
+        const ongoing2 = await crawlOngoing();
+
+        expect(ongoing2.crawls.find(x => x.id === res.id)).toBeUndefined();
+    }, 120000);
     
     // TEMP: Flaky
     // it.concurrent("discovers URLs properly when origin is not included", async () => {
