@@ -1,5 +1,5 @@
 import { Response } from "express";
-import { logger } from "../../lib/logger";
+import { logger as _logger } from "../../lib/logger";
 import {
   Document,
   RequestWithAuth,
@@ -7,13 +7,10 @@ import {
   scrapeRequestSchema,
   ScrapeResponse,
 } from "./types";
-import { billTeam } from "../../services/billing/credit_billing";
 import { v4 as uuidv4 } from "uuid";
 import { addScrapeJob, waitForJob } from "../../services/queue-jobs";
 import { getJobPriority } from "../../lib/job-priority";
 import { getScrapeQueue } from "../../services/queue-service";
-import { supabaseGetJobById } from "../../lib/supabase-jobs";
-import { calculateCreditsToBeBilled } from "../../lib/scrape-billing";
 
 export async function scrapeController(
   req: RequestWithAuth<{}, ScrapeResponse, ScrapeRequest>,
@@ -21,12 +18,18 @@ export async function scrapeController(
 ) {
   const jobId = uuidv4();
   const preNormalizedBody = { ...req.body };
+  const logger = _logger.child({
+    method: "scrapeController",
+    jobId,
+    scrapeId: jobId,
+    teamId: req.auth.team_id,
+    team_id: req.auth.team_id,
+  });
  
   logger.debug("Scrape " + jobId + " starting", {
     scrapeId: jobId,
     request: req.body,
     originalRequest: preNormalizedBody,
-    teamId: req.auth.team_id,
     account: req.account,
   });
 
@@ -40,7 +43,6 @@ export async function scrapeController(
     team_id: req.auth.team_id,
     basePriority: 10,
   });
-  // 
 
   const isDirectToBullMQ = process.env.SEARCH_PREVIEW_TOKEN !== undefined && process.env.SEARCH_PREVIEW_TOKEN === req.body.__searchPreviewToken;
   
@@ -49,15 +51,20 @@ export async function scrapeController(
       url: req.body.url,
       mode: "single_urls",
       team_id: req.auth.team_id,
-      scrapeOptions: req.body,
+      scrapeOptions: {
+        ...req.body,
+        ...(req.body.__experimental_cache ? {
+          maxAge: req.body.maxAge ?? 4 * 60 * 60 * 1000, // 4 hours
+        } : {}),
+      },
       internalOptions: {
         teamId: req.auth.team_id,
         saveScrapeResultToGCS: process.env.GCS_FIRE_ENGINE_BUCKET_NAME ? true : false,
         unnormalizedSourceURL: preNormalizedBody.url,
-        useCache: req.body.__experimental_cache ? true : false,
         bypassBilling: isDirectToBullMQ,
       },
-      origin: req.body.origin,
+      origin,
+      integration: req.body.integration,
       startTime,
     },
     {},
@@ -77,39 +84,9 @@ export async function scrapeController(
   try {
     doc = await waitForJob(jobId, timeout + totalWait);
   } catch (e) {
-    logger.error(`Error in scrapeController: ${e}`, {
-      jobId,
-      scrapeId: jobId,
+    logger.error(`Error in scrapeController`, {
       startTime,
     });
-    
-    let creditsToBeBilled = 0;
-
-    if (req.body.agent?.model?.toLowerCase() === "fire-1" || req.body.extract?.agent?.model?.toLowerCase() === "fire-1" || req.body.jsonOptions?.agent?.model?.toLowerCase() === "fire-1") {
-      if (process.env.USE_DB_AUTHENTICATION === "true") {
-        // @Nick this is a hack pushed at 2AM pls help - mogery
-        const job = await supabaseGetJobById(jobId);
-        if (!job?.cost_tracking) {
-          logger.warn("No cost tracking found for job", {
-            jobId,
-          });
-        }
-        creditsToBeBilled = Math.ceil((job?.cost_tracking?.totalCost ?? 1) * 1800);
-      } else {
-        creditsToBeBilled = 150;
-      }
-    }
-  
-    if (creditsToBeBilled > 0) {
-      billTeam(req.auth.team_id, req.acuc?.sub_id, creditsToBeBilled).catch(
-        (error) => {
-          logger.error(
-            `Failed to bill team ${req.auth.team_id} for ${creditsToBeBilled} credits: ${error}`,
-          );
-          // Optionally, you could notify an admin or add to a retry queue here
-        },
-      );
-    }
 
     if (
       e instanceof Error &&
@@ -128,13 +105,12 @@ export async function scrapeController(
   }
 
   await getScrapeQueue().remove(jobId);
-
+  
   if (!req.body.formats.includes("rawHtml")) {
     if (doc && doc.rawHtml) {
       delete doc.rawHtml;
     }
   }
-
 
   return res.status(200).json({
     success: true,

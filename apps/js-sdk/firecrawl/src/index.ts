@@ -50,6 +50,9 @@ export interface FirecrawlDocumentMetadata {
   sourceURL?: string;
   statusCode?: number;
   error?: string;
+  proxyUsed?: "basic" | "stealth";
+  cacheState?: "miss" | "hit";
+  cachedAt?: string;
   [key: string]: any; // Allows for additional metadata properties not explicitly defined.
 }
 
@@ -121,6 +124,7 @@ export interface CrawlScrapeOptions {
   blockAds?: boolean;
   proxy?: "basic" | "stealth" | "auto";
   storeInCache?: boolean;
+  maxAge?: number;
 }
 
 export type Action = {
@@ -166,6 +170,7 @@ export interface ScrapeParams<LLMSchema extends zt.ZodSchema = any, ActionsSchem
     prompt?: string;
     schema?: any;
     modes?: ("json" | "git-diff")[];
+    tag?: string | null;
   }
   actions?: ActionsSchema;
   agent?: AgentOptions;
@@ -204,6 +209,7 @@ export interface CrawlParams {
   maxDiscoveryDepth?: number;
   limit?: number;
   allowBackwardLinks?: boolean;
+  crawlEntireDomain?: boolean;
   allowExternalLinks?: boolean;
   ignoreSitemap?: boolean;
   scrapeOptions?: CrawlScrapeOptions;
@@ -221,6 +227,7 @@ export interface CrawlParams {
    * If not provided, the crawler may use the robots.txt crawl delay if available.
    */
   delay?: number;
+  maxConcurrency?: number;
 }
 
 /**
@@ -287,6 +294,7 @@ export interface MapParams {
   sitemapOnly?: boolean;
   limit?: number;
   timeout?: number;
+  useIndex?: boolean;
 }
 
 /**
@@ -1006,9 +1014,10 @@ export default class FirecrawlApp {
     idempotencyKey?: string,
     webhook?: CrawlParams["webhook"],
     ignoreInvalidURLs?: boolean,
+    maxConcurrency?: number,
   ): Promise<BatchScrapeStatusResponse | ErrorResponse> {
     const headers = this.prepareHeaders(idempotencyKey);
-    let jsonData: any = { urls, webhook, ignoreInvalidURLs, ...params, origin: `js-sdk@${this.version}` };
+    let jsonData: any = { urls, webhook, ignoreInvalidURLs, maxConcurrency, ...params, origin: `js-sdk@${this.version}` };
     if (jsonData?.extract?.schema) {
       let schema = jsonData.extract.schema;
 

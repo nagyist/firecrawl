@@ -23,9 +23,7 @@ import { logJob } from "../../services/logging/log_job";
 import { performCosineSimilarity } from "../../lib/map-cosine";
 import { logger } from "../../lib/logger";
 import Redis from "ioredis";
-import { querySitemapIndex } from "../../scraper/WebScraper/sitemap-index";
-import { getIndexQueue } from "../../services/queue-service";
-import { queryIndexAtSplitLevel } from "../../services/index";
+import { generateURLSplits, queryIndexAtDomainSplitLevel, queryIndexAtSplitLevel } from "../../services/index";
 
 configDotenv();
 const redis = new Redis(process.env.REDIS_URL!);
@@ -44,12 +42,24 @@ interface MapResult {
   mapResults: MapDocument[];
 }
 
-async function queryIndex(url: string, limit: number, useIndex: boolean): Promise<string[]> {
+async function queryIndex(url: string, limit: number, useIndex: boolean, includeSubdomains: boolean): Promise<string[]> {
   if (!useIndex) {
     return [];
   }
 
-  return await queryIndexAtSplitLevel(url, limit);
+  const urlSplits = generateURLSplits(url);
+  if (urlSplits.length === 1) {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname;
+
+    // TEMP: this should be altered on June 15th 2025 7AM PT - mogery
+    const domainLinks = includeSubdomains ? await queryIndexAtDomainSplitLevel(hostname, limit, 14 * 24 * 60 * 60 * 1000) : [];
+    const splitLinks = await queryIndexAtSplitLevel(url, limit, 14 * 24 * 60 * 60 * 1000);
+
+    return Array.from(new Set([...domainLinks, ...splitLinks]));
+  } else {
+    return await queryIndexAtSplitLevel(url, limit);
+  }
 }
 
 export async function getMapResults({
@@ -176,9 +186,8 @@ export async function getMapResults({
     }
 
     // Parallelize sitemap index query with search results
-    const [sitemapIndexResult, indexResults, ...searchResults] = await Promise.all([
-      querySitemapIndex(url, abort),
-      queryIndex(url, limit, useIndex),
+    const [indexResults, ...searchResults] = await Promise.all([
+      queryIndex(url, limit, useIndex, includeSubdomains),
       ...(cachedResult ? [] : pagePromises),
     ]);
 
@@ -186,14 +195,10 @@ export async function getMapResults({
       links.push(...indexResults);
     }
 
-    const twoDaysAgo = new Date();
-    twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-
-    // If sitemap is not ignored and either we have few URLs (<100) or the data is stale (>2 days old), fetch fresh sitemap
+    // If sitemap is not ignored, fetch sitemap
+    // This will attempt to find it in the index at first, or fetch a fresh one if it's older than 2 days
     if (
-      !ignoreSitemap &&
-      (sitemapIndexResult.urls.length < 100 ||
-        new Date(sitemapIndexResult.lastUpdated) < twoDaysAgo)
+      !ignoreSitemap
     ) {
       try {
         await crawler.tryGetSitemap(
@@ -237,9 +242,6 @@ export async function getMapResults({
         });
       }
     }
-
-    // Add sitemap-index URLs
-    links.push(...sitemapIndexResult.urls);
 
     // Perform cosine similarity between the search query and the list of links
     if (search) {
@@ -295,19 +297,6 @@ export async function getMapResults({
   const linksToReturn = crawlerOptions.sitemapOnly
     ? links
     : links.slice(0, limit);
-
-  //
-
-  await getIndexQueue().add(
-    id,
-    {
-      originUrl: url,
-      visitedUrls: linksToReturn,
-    },
-    {
-      priority: 10,
-    },
-  );
 
   return {
     success: true,
@@ -390,7 +379,9 @@ export async function mapController(
     crawlerOptions: {},
     scrapeOptions: {},
     origin: req.body.origin ?? "api",
+    integration: req.body.integration,
     num_tokens: 0,
+    credits_billed: 1,
   });
 
   const response = {

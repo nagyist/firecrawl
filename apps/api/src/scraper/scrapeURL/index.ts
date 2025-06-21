@@ -48,6 +48,7 @@ export type ScrapeUrlResponse = (
 export type Meta = {
   id: string;
   url: string;
+  rewrittenUrl?: string;
   options: ScrapeOptions;
   internalOptions: InternalOptions;
   logger: Logger;
@@ -127,6 +128,24 @@ function buildFeatureFlags(
   return flags;
 }
 
+// Convenience URL rewrites, "fake redirects" in essence.
+// Used to rewrite commonly used non-scrapable URLs to their scrapable equivalents.
+function rewriteUrl(url: string): string | undefined {
+  if (url.startsWith("https://docs.google.com/document/d/") || url.startsWith("http://docs.google.com/document/d/")) {
+    const id = url.match(/\/document\/d\/([-\w]+)/)?.[1];
+    if (id) {
+      return `https://docs.google.com/document/d/${id}/export?format=pdf`;
+    }
+  } else if (url.startsWith("https://docs.google.com/presentation/d/") || url.startsWith("http://docs.google.com/presentation/d/")) {
+    const id = url.match(/\/presentation\/d\/([-\w]+)/)?.[1];
+    if (id) {
+      return `https://docs.google.com/presentation/d/${id}/export?format=pdf`;
+    }
+  }
+
+  return undefined;
+}
+
 // The meta object contains all required information to perform a scrape.
 // For example, the scrape ID, URL, options, feature flags, logs that occur while scraping.
 // The meta object is usually immutable, except for the logs array, and in edge cases (e.g. a new feature is suddenly required)
@@ -159,6 +178,7 @@ async function buildMetaObject(
   return {
     id,
     url,
+    rewrittenUrl: rewriteUrl(url),
     options,
     internalOptions,
     logger,
@@ -182,10 +202,8 @@ export type InternalOptions = {
 
   v0CrawlOnlyUrls?: boolean;
   v0DisableJsDom?: boolean;
-  useCache?: boolean;
   disableSmartWaitCache?: boolean; // Passed along to fire-engine
   isBackgroundIndex?: boolean;
-  fromCache?: boolean; // Indicates if the document was retrieved from cache
   abort?: AbortSignal;
   urlInvisibleInCurrentCrawl?: boolean;
   unnormalizedSourceURL?: string;
@@ -233,7 +251,7 @@ function safeguardCircularError<T>(error: T): T {
 }
 
 async function scrapeURLLoop(meta: Meta): Promise<ScrapeUrlResponse> {
-  meta.logger.info(`Scraping URL ${JSON.stringify(meta.url)}...`);
+  meta.logger.info(`Scraping URL ${JSON.stringify(meta.rewrittenUrl ?? meta.url)}...`);
 
   // TODO: handle sitemap data, see WebScraper/index.ts:280
   // TODO: ScrapeEvents
@@ -400,7 +418,7 @@ async function scrapeURLLoop(meta: Meta): Promise<ScrapeUrlResponse> {
       numPages: result.result.numPages,
       contentType: result.result.contentType,
       proxyUsed: meta.featureFlags.has("stealthProxy") ? "stealth" : "basic",
-      ...(results["index"] ? (
+      ...((results["index"] || results["index;documents"]) ? (
         result.result.cacheInfo ? {
           cacheState: "hit",
           cachedAt: result.result.cacheInfo.created_at.toISOString(),
@@ -441,6 +459,11 @@ export async function scrapeURL(
   costTracking: CostTracking,
 ): Promise<ScrapeUrlResponse> {
   const meta = await buildMetaObject(id, url, options, internalOptions, costTracking);
+
+  if (meta.rewrittenUrl) {
+    meta.logger.info("Rewriting URL");
+  }
+
   try {
     while (true) {
       try {

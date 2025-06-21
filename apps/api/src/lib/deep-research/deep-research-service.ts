@@ -131,9 +131,8 @@ export async function performDeepResearch(options: DeepResearchServiceOptions) {
             removeBase64Images: false,
             fastMode: false,
             blockAds: false,
-            maxAge: 0,
+            maxAge: 4 * 60 * 60 * 1000,
             storeInCache: true,
-            __experimental_cache: true,
           },
         }, logger, costTracking, acuc?.flags ?? null);
         return response.length > 0 ? response : [];
@@ -347,6 +346,8 @@ export async function performDeepResearch(options: DeepResearchServiceOptions) {
     const progress = state.getProgress();
     logger.debug("[Deep Research] Research completed successfully");
 
+    const credits_billed = Math.min(urlsAnalyzed, options.maxUrls);
+
     // Log job with token usage and sources
     await logJob({
       job_id: researchId,
@@ -363,6 +364,7 @@ export async function performDeepResearch(options: DeepResearchServiceOptions) {
       num_tokens: 0,
       tokens_billed: 0,
       cost_tracking: costTracking,
+      credits_billed,
     });
     await updateDeepResearch(researchId, {
       status: "completed",
@@ -370,7 +372,7 @@ export async function performDeepResearch(options: DeepResearchServiceOptions) {
       json: finalAnalysisJson,
     });
     // Bill team for usage based on URLs analyzed
-    billTeam(teamId, subId, Math.min(urlsAnalyzed, options.maxUrls), logger).catch(
+    billTeam(teamId, subId, credits_billed, logger).catch(
       (error) => {
         logger.error(
           `Failed to bill team ${teamId} for ${urlsAnalyzed} URLs analyzed`, { teamId, count: urlsAnalyzed, error },

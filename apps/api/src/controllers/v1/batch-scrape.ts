@@ -102,6 +102,7 @@ export async function batchScrapeController(
         }, // NOTE: smart wait disabled for batch scrapes to ensure contentful scrape, speed does not matter
         team_id: req.auth.team_id,
         createdAt: Date.now(),
+        maxConcurrency: req.body.maxConcurrency,
       };
 
   if (!req.body.appendToId) {
@@ -134,6 +135,7 @@ export async function batchScrapeController(
         crawlerOptions: null,
         scrapeOptions,
         origin: "api",
+        integration: req.body.integration,
         crawl_id: id,
         sitemapped: true,
         v1: true,
@@ -170,14 +172,14 @@ export async function batchScrapeController(
     logger.debug("Calling webhook with batch_scrape.started...", {
       webhook: req.body.webhook,
     });
-    await callWebhook(
-      req.auth.team_id,
-      id,
-      null,
-      req.body.webhook,
-      true,
-      "batch_scrape.started",
-    );
+    await callWebhook({
+      teamId: req.auth.team_id,
+      crawlId: id,
+      data: null,
+      webhook: req.body.webhook,
+      v1: true,
+      eventType: "batch_scrape.started",
+    });
   }
 
   const protocol = process.env.ENV === "local" ? req.protocol : "https";

@@ -10,6 +10,21 @@ import {
 } from "../../lib/entities";
 import { InternalOptions } from "../../scraper/scrapeURL";
 
+export enum IntegrationEnum {
+  DIFY = "dify",
+  ZAPIER = "zapier",
+  PIPEDREAM = "pipedream",
+  RAYCAST = "raycast",
+  LANGCHAIN = "langchain",
+  CREWAI = "crewai",
+  LLAMAINDEX = "llamaindex",
+  N8N = "n8n",
+  CAMELAI = "camelai",
+  MAKE = "make",
+  FLOWISE = "flowise",
+  METAGPT = "metagpt",
+}
+
 export type Format =
   | "markdown"
   | "html"
@@ -27,14 +42,15 @@ export const url = z.preprocess(
       x = `http://${x}`;
     }
     
-    try {
-      const urlObj = new URL(x as string);
-      if (urlObj.search) {
-        const searchParams = new URLSearchParams(urlObj.search.substring(1));
-        return `${urlObj.origin}${urlObj.pathname}?${searchParams.toString()}`;
-      }
-    } catch (e) {
-    }
+    // transforming the query parameters is breaking certain sites, so we're not doing it - mogery
+    // try {
+    //   const urlObj = new URL(x as string);
+    //   if (urlObj.search) {
+    //     const searchParams = new URLSearchParams(urlObj.search.substring(1));
+    //     return `${urlObj.origin}${urlObj.pathname}?${searchParams.toString()}`;
+    //   }
+    // } catch (e) {
+    // }
     
     return x;
   },
@@ -260,6 +276,7 @@ const baseScrapeOptions = z
         prompt: z.string().optional(),
         schema: z.any().optional(),
         modes: z.enum(["json", "git-diff"]).array().optional().default([]),
+        tag: z.string().or(z.null()).default(null),
       })
       .optional(),
     mobile: z.boolean().default(false),
@@ -311,6 +328,7 @@ const baseScrapeOptions = z
     proxy: z.enum(["basic", "stealth", "auto"]).optional(),
     maxAge: z.number().int().gte(0).safe().default(0),
     storeInCache: z.boolean().default(true),
+    // @deprecated
     __experimental_cache: z.boolean().default(false).optional(),
     __searchPreviewToken: z.string().optional(),
   })
@@ -469,6 +487,7 @@ export const extractV1Options = z
     enableWebSearch: z.boolean().default(false),
     scrapeOptions: baseScrapeOptions.default({ onlyMainContent: false }).optional(),
     origin: z.string().optional().default("api"),
+    integration: z.nativeEnum(IntegrationEnum).optional().transform(val => val || null),
     urlTrace: z.boolean().default(false),
     timeout: z.number().int().positive().finite().safe().default(60000),
     __experimental_streamSteps: z.boolean().default(false),
@@ -527,6 +546,7 @@ export const scrapeRequestSchema = baseScrapeOptions
     extract: extractOptionsWithAgent.optional(),
     jsonOptions: extractOptionsWithAgent.optional(),
     origin: z.string().optional().default("api"),
+    integration: z.nativeEnum(IntegrationEnum).optional().transform(val => val || null),
     timeout: z.number().int().positive().finite().safe().default(30000),
   })
   .strict(strictMessage)
@@ -561,9 +581,11 @@ export const batchScrapeRequestSchema = baseScrapeOptions
   .extend({
     urls: url.array(),
     origin: z.string().optional().default("api"),
+    integration: z.nativeEnum(IntegrationEnum).optional().transform(val => val || null),
     webhook: webhookSchema.optional(),
     appendToId: z.string().uuid().optional(),
     ignoreInvalidURLs: z.boolean().default(false),
+    maxConcurrency: z.number().positive().int().optional(),
   })
   .strict(strictMessage)
   .refine(extractRefine, extractRefineOpts)
@@ -574,6 +596,7 @@ export const batchScrapeRequestSchemaNoURLValidation = baseScrapeOptions
   .extend({
     urls: z.string().array(),
     origin: z.string().optional().default("api"),
+    integration: z.nativeEnum(IntegrationEnum).optional().transform(val => val || null),
     webhook: webhookSchema.optional(),
     appendToId: z.string().uuid().optional(),
     ignoreInvalidURLs: z.boolean().default(false),
@@ -593,7 +616,8 @@ const crawlerOptions = z
     maxDepth: z.number().default(10), // default?
     maxDiscoveryDepth: z.number().optional(),
     limit: z.number().default(10000), // default?
-    allowBackwardLinks: z.boolean().default(false), // >> TODO: CHANGE THIS NAME???
+    allowBackwardLinks: z.boolean().default(false), // DEPRECATED: use crawlEntireDomain
+    crawlEntireDomain: z.boolean().optional(),
     allowExternalLinks: z.boolean().default(false),
     allowSubdomains: z.boolean().default(false),
     ignoreRobotsTxt: z.boolean().default(false),
@@ -610,7 +634,8 @@ const crawlerOptions = z
 //   excludePaths?: string[];
 //   maxDepth?: number;
 //   limit?: number;
-//   allowBackwardLinks?: boolean; // >> TODO: CHANGE THIS NAME???
+//   allowBackwardLinks?: boolean; // DEPRECATED: use crawlEntireDomain
+//   crawlEntireDomain?: boolean;
 //   allowExternalLinks?: boolean;
 //   ignoreSitemap?: boolean;
 // };
@@ -621,17 +646,24 @@ export const crawlRequestSchema = crawlerOptions
   .extend({
     url,
     origin: z.string().optional().default("api"),
+    integration: z.nativeEnum(IntegrationEnum).optional().transform(val => val || null),
     scrapeOptions: baseScrapeOptions.default({}),
     webhook: webhookSchema.optional(),
     limit: z.number().default(10000),
+    maxConcurrency: z.number().positive().int().optional(),
   })
   .strict(strictMessage)
   .refine((x) => extractRefine(x.scrapeOptions), extractRefineOpts)
   .refine((x) => fire1Refine(x.scrapeOptions), fire1RefineOpts)
-  .transform((x) => ({
-    ...x,
-    scrapeOptions: extractTransform(x.scrapeOptions),
-  }));
+  .transform((x) => {
+    if (x.crawlEntireDomain !== undefined) {
+      x.allowBackwardLinks = x.crawlEntireDomain;
+    }
+    return {
+      ...x,
+      scrapeOptions: extractTransform(x.scrapeOptions),
+    };
+  });
 
 // export type CrawlRequest = {
 //   url: string;
@@ -652,6 +684,7 @@ export const mapRequestSchema = crawlerOptions
   .extend({
     url,
     origin: z.string().optional().default("api"),
+    integration: z.nativeEnum(IntegrationEnum).optional().transform(val => val || null),
     includeSubdomains: z.boolean().default(true),
     search: z.string().optional(),
     ignoreSitemap: z.boolean().default(false),
@@ -759,6 +792,7 @@ export type Document = {
     proxyUsed: "basic" | "stealth";
     cacheState?: "hit" | "miss";
     cachedAt?: string;
+    creditsUsed?: number;
     // [key: string]: string | string[] | number | { smartScrape: number; other: number; total: number } | undefined;
   };
   serpResults?: {
@@ -820,6 +854,7 @@ export interface ExtractResponse {
   sources?: {
     [key: string]: string[];
   };
+  tokensUsed?: number;
 }
 
 export interface ExtractResponseRequestTest {
@@ -882,6 +917,18 @@ export type CrawlStatusResponse =
       data: Document[];
     };
 
+export type OngoingCrawlsResponse =
+  | ErrorResponse
+  | {
+      success: true;
+      crawls: {
+        id: string;
+        teamId: string;
+        url: string;
+        options: CrawlerOptions;
+      }[];
+  };
+      
 export type CrawlErrorsResponse =
   | ErrorResponse
   | {
@@ -1002,7 +1049,7 @@ export function toLegacyCrawlerOptions(x: CrawlerOptions) {
     maxDepth: x.maxDepth,
     limit: x.limit,
     generateImgAltText: false,
-    allowBackwardCrawling: x.allowBackwardLinks,
+    allowBackwardCrawling: x.crawlEntireDomain ?? x.allowBackwardLinks,
     allowExternalContentLinks: x.allowExternalLinks,
     allowSubdomains: x.allowSubdomains,
     ignoreRobotsTxt: x.ignoreRobotsTxt,
@@ -1016,6 +1063,26 @@ export function toLegacyCrawlerOptions(x: CrawlerOptions) {
   };
 }
 
+export function toNewCrawlerOptions(x: any): CrawlerOptions {
+  return {
+    includePaths: x.includes,
+    excludePaths: x.excludes,
+    limit: x.limit,
+    maxDepth: x.maxDepth,
+    allowBackwardLinks: x.allowBackwardCrawling,
+    crawlEntireDomain: x.allowBackwardCrawling,
+    allowExternalLinks: x.allowExternalContentLinks,
+    allowSubdomains: x.allowSubdomains,
+    ignoreRobotsTxt: x.ignoreRobotsTxt,
+    ignoreSitemap: x.ignoreSitemap,
+    deduplicateSimilarURLs: x.deduplicateSimilarURLs,
+    ignoreQueryParameters: x.ignoreQueryParameters,
+    regexOnFullURL: x.regexOnFullURL,
+    maxDiscoveryDepth: x.maxDiscoveryDepth,
+    delay: x.delay,
+  }
+}
+
 export function fromLegacyCrawlerOptions(x: any, teamId: string): {
   crawlOptions: CrawlerOptions;
   internalOptions: InternalOptions;
@@ -1027,6 +1094,7 @@ export function fromLegacyCrawlerOptions(x: any, teamId: string): {
       limit: x.maxCrawledLinks ?? x.limit,
       maxDepth: x.maxDepth,
       allowBackwardLinks: x.allowBackwardCrawling,
+      crawlEntireDomain: x.allowBackwardCrawling,
       allowExternalLinks: x.allowExternalContentLinks,
       allowSubdomains: x.allowSubdomains,
       ignoreRobotsTxt: x.ignoreRobotsTxt,
@@ -1172,6 +1240,7 @@ export const searchRequestSchema = z
     country: z.string().optional().default("us"),
     location: z.string().optional(),
     origin: z.string().optional().default("api"),
+    integration: z.nativeEnum(IntegrationEnum).optional().transform(val => val || null),
     timeout: z.number().int().positive().finite().safe().default(60000),
     ignoreInvalidURLs: z.boolean().optional().default(false),
     __searchPreviewToken: z.string().optional(),
