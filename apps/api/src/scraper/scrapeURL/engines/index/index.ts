@@ -188,6 +188,7 @@ const errorCountToRegister = 3;
 export async function scrapeURLWithIndex(
   meta: Meta,
 ): Promise<EngineScrapeResult> {
+  const startTime = Date.now();
   const normalizedURL = normalizeURLForIndex(meta.url);
   const urlHash = hashURL(normalizedURL);
 
@@ -241,6 +242,8 @@ export async function scrapeURLWithIndex(
     }
   }
 
+  const checkpoint1 = Date.now();
+
   const { data, error } = await index_supabase_service.rpc("index_get_recent", {
     p_url_hash: urlHash,
     p_max_age_ms: maxAge,
@@ -287,9 +290,14 @@ export async function scrapeURLWithIndex(
       hit: false,
       maxAge,
       dynamicMaxAge: meta.options.maxAge === undefined,
+      timingsFull: Date.now() - startTime,
+      timingsMaxAge: checkpoint1 - startTime,
+      timingsSupa: Date.now() - checkpoint1,
     });
     throw new IndexMissError();
   }
+
+  const checkpoint2 = Date.now();
 
   const id = data[0].id;
 
@@ -327,6 +335,10 @@ export async function scrapeURLWithIndex(
     age: Date.now() - new Date(selectedRow.created_at).getTime(),
     maxAge,
     dynamicMaxAge: meta.options.maxAge === undefined,
+    timingsFull: Date.now() - startTime,
+    timingsMaxAge: checkpoint1 - startTime,
+    timingsSupa: checkpoint2 - checkpoint1,
+    timingsGCS: Date.now() - checkpoint2,
   });
 
   return {
